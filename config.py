@@ -23,9 +23,13 @@ AMO_ASSIGNED_STATUS_NAME = os.getenv("AMO_ASSIGNED_STATUS_NAME", "Назначе
 
 # AmoCRM: имена полей сделки (custom fields) — можно переопределить через env
 AMO_FIELD_NAME_GEODESIST = os.getenv("AMO_FIELD_NAME_GEODESIST", "Геодезист")
-AMO_FIELD_NAME_WORK_TYPE = os.getenv("AMO_FIELD_NAME_WORK_TYPE", "Тип сделки")
 AMO_FIELD_NAME_ADDRESS = os.getenv("AMO_FIELD_NAME_ADDRESS", "Адрес выезда")
 AMO_FIELD_NAME_TIME = os.getenv("AMO_FIELD_NAME_TIME", "Время выезда")
+
+# Имена полей с кадастровыми номерами.
+# Если у вас поля названы иначе — переопределите через Railway Variables.
+AMO_FIELD_NAME_CAD_1 = os.getenv("AMO_FIELD_NAME_CAD_1", "Кадастровый номер 1")
+AMO_FIELD_NAME_CAD_2 = os.getenv("AMO_FIELD_NAME_CAD_2", "Кадастровый номер 2")
 
 
 def require_env(name: str, value: str | None) -> str:

@@ -12,7 +12,8 @@ from config import (
     AMO_FIELD_NAME_ADDRESS,
     AMO_FIELD_NAME_GEODESIST,
     AMO_FIELD_NAME_TIME,
-    AMO_FIELD_NAME_WORK_TYPE,
+    AMO_FIELD_NAME_CAD_1,
+    AMO_FIELD_NAME_CAD_2,
     DEBUG,
     WAPPI_API_TOKEN,
     WAPPI_MAX_PROFILE_ID,
@@ -109,6 +110,18 @@ def _cf_value_by_name(lead: dict, field_name: str) -> str:
     return ""
 
 
+def _cf_values_by_names(lead: dict, field_names: list[str]) -> list[str]:
+    """
+    Берёт значения нескольких полей по точному названию. Пустые отбрасывает.
+    """
+    out: list[str] = []
+    for n in field_names:
+        v = _cf_value_by_name(lead, n)
+        if v:
+            out.append(v)
+    return out
+
+
 def _contact_phone(contact: dict) -> str:
     for cf in contact.get("custom_fields_values") or []:
         if cf.get("field_code") != "PHONE":
@@ -151,22 +164,55 @@ async def _get_assigned_status_id(amo: AmoCRMClient, pipeline_id: int) -> Option
     return _PIPELINES_CACHE.get(pipeline_id, {}).get(AMO_ASSIGNED_STATUS_NAME.strip().lower())
 
 
+def _format_time_msk(raw: str) -> str:
+    """
+    Поле времени может быть строкой даты/времени или unix timestamp (сек/мс).
+    Форматируем в МСК.
+    """
+    s = (raw or "").strip()
+    if not s:
+        return "Не указано"
+    if re.fullmatch(r"\d{10,13}", s):
+        try:
+            ts = int(s)
+            if len(s) == 13:
+                ts = ts // 1000
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            dt = datetime.fromtimestamp(ts, tz=ZoneInfo("Europe/Moscow"))
+            return dt.strftime("%d.%m.%Y %H:%M")
+        except Exception:
+            return s
+    return s
+
+
+def _geodesist_name(geodesist_raw: str) -> str:
+    s = (geodesist_raw or "").strip()
+    if not s:
+        return ""
+    return s.split(",")[0].strip()
+
+
 def _format_message(
     lead_id: int,
     client_name: str,
     client_phone: str,
-    work_type: str,
     address: str,
     time_slot: str,
+    cadastral_numbers: list[str],
 ) -> str:
+    cad_block = ""
+    if cadastral_numbers:
+        cad_lines = "\n".join([f"- {x}" for x in cadastral_numbers if x])
+        cad_block = f"\n\n🗺️ Кадастровые номера:\n{cad_lines}"
     return (
         "🧭 ВЫЕЗД ГЕОДЕЗИСТА\n\n"
         f"👤 Клиент: {client_name}\n"
         f"☎️ Телефон: {client_phone}\n"
-        f"🧩 Тип работ: {work_type}\n"
         f"📍 Адрес: {address}\n"
-        f"🕒 Когда: {time_slot}\n\n"
-        f"ID сделки: {lead_id}\n"
+        f"🕒 Когда (МСК): {time_slot}"
+        f"{cad_block}"
     )
 
 
@@ -208,9 +254,9 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
     if not phone:
         raise ValueError("Не удалось определить телефон геодезиста из поля сделки")
 
-    wt = _cf_value_by_name(lead, AMO_FIELD_NAME_WORK_TYPE) or "Не указано"
     addr = _cf_value_by_name(lead, AMO_FIELD_NAME_ADDRESS) or "Не указано"
-    ts = _cf_value_by_name(lead, AMO_FIELD_NAME_TIME) or "Не указано"
+    ts = _format_time_msk(_cf_value_by_name(lead, AMO_FIELD_NAME_TIME))
+    cadastral_numbers = _cf_values_by_names(lead, [AMO_FIELD_NAME_CAD_1, AMO_FIELD_NAME_CAD_2])
 
     # 4) клиент из контакта сделки
     cn = "Не указано"
@@ -221,21 +267,30 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
         cn = (contact.get("name") or "").strip() or cn
         cp = _contact_phone(contact) or cp
 
-    text = _format_message(lead_id, cn, cp, wt, addr, ts)
+    text = _format_message(lead_id, cn, cp, addr, ts, cadastral_numbers)
 
     # 5) отправляем в MAX
     wappi_result = await wappi.send_text(recipient=phone, body=text)
 
+    task_id = ""
+    detail = ""
+    if isinstance(wappi_result, dict):
+        task_id = str(wappi_result.get("task_id") or "").strip()
+        detail = str(wappi_result.get("detail") or "").strip()
+
+    geo_name = _geodesist_name(geodesist_raw) or "Не указано"
+    cad_note = "\n".join([f"- {x}" for x in cadastral_numbers if x])
+
     note = (
         "✅ Геодезисту отправлено в MAX\n\n"
-        f"Геодезист: {phone}\n"
-        f"Поле геодезиста: {geodesist_raw or 'Не указано'}\n"
+        f"Геодезист: {geo_name} ({phone})\n"
         f"Клиент: {cn}\n"
-        f"Телефон: {cp}\n"
-        f"Тип работ: {wt}\n"
+        f"Телефон клиента: {cp}\n"
         f"Адрес: {addr}\n"
-        f"Когда: {ts}\n\n"
-        f"Wappi: {wappi_result}"
+        f"Когда (МСК): {ts}\n"
+        f"{('Кадастровые номера:\\n' + cad_note + '\\n') if cad_note else ''}\n"
+        f"{('Wappi task_id: ' + task_id + '\\n') if task_id else ''}"
+        f"{('Wappi: ' + detail) if detail else ''}"
     )
     await amo.add_note_to_lead(lead_id, note)
 
