@@ -194,28 +194,6 @@ def _geodesist_name(geodesist_raw: str) -> str:
     return s.split(",")[0].strip()
 
 
-def _format_message(
-    lead_id: int,
-    client_name: str,
-    client_phone: str,
-    address: str,
-    time_slot: str,
-    cadastral_numbers: list[str],
-) -> str:
-    cad_block = ""
-    if cadastral_numbers:
-        cad_lines = "\n".join([f"- {x}" for x in cadastral_numbers if x])
-        cad_block = f"\n\n🗺️ Кадастровые номера:\n{cad_lines}"
-    return (
-        "🧭 ВЫЕЗД ГЕОДЕЗИСТА\n\n"
-        f"👤 Клиент: {client_name}\n"
-        f"☎️ Телефон: {client_phone}\n"
-        f"📍 Адрес: {address}\n"
-        f"🕒 Когда (МСК): {time_slot}"
-        f"{cad_block}"
-    )
-
-
 async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], status_id: Optional[int]) -> None:
     # clients
     wappi = WappiMaxClient(
@@ -267,30 +245,34 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
         cn = (contact.get("name") or "").strip() or cn
         cp = _contact_phone(contact) or cp
 
-    text = _format_message(lead_id, cn, cp, addr, ts, cadastral_numbers)
+    geo_name = _geodesist_name(geodesist_raw) or "Не указано"
+    cad = [x.strip() for x in (cadastral_numbers or []) if str(x).strip()]
+    cad_line = ", ".join(cad)
+
+    # Сообщение геодезисту в MAX (без служебной информации)
+    text = (
+        "Добрый день!\n"
+        "Вам назначен выезд на объект.\n\n"
+        f"Геодезист: {geo_name}\n"
+        f"Клиент: {cn}\n"
+        f"Телефон клиента: {cp}\n"
+        f"Адрес: {addr}\n"
+        f"Когда (МСК): {ts}"
+        + (f"\nКадастровые номера: {cad_line}" if cad_line else "")
+    )
 
     # 5) отправляем в MAX
-    wappi_result = await wappi.send_text(recipient=phone, body=text)
+    await wappi.send_text(recipient=phone, body=text)
 
-    task_id = ""
-    detail = ""
-    if isinstance(wappi_result, dict):
-        task_id = str(wappi_result.get("task_id") or "").strip()
-        detail = str(wappi_result.get("detail") or "").strip()
-
-    geo_name = _geodesist_name(geodesist_raw) or "Не указано"
-    cad_note = "\n".join([f"- {x}" for x in cadastral_numbers if x])
-
+    # Примечание в AmoCRM — без служебной информации Wappi
     note = (
         "✅ Геодезисту отправлено в MAX\n\n"
         f"Геодезист: {geo_name} ({phone})\n"
         f"Клиент: {cn}\n"
         f"Телефон клиента: {cp}\n"
         f"Адрес: {addr}\n"
-        f"Когда (МСК): {ts}\n"
-        f"{('Кадастровые номера:\\n' + cad_note + '\\n') if cad_note else ''}\n"
-        f"{('Wappi task_id: ' + task_id + '\\n') if task_id else ''}"
-        f"{('Wappi: ' + detail) if detail else ''}"
+        f"Когда (МСК): {ts}"
+        + (f"\nКадастровые номера: {cad_line}" if cad_line else "")
     )
     await amo.add_note_to_lead(lead_id, note)
 
