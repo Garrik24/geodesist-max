@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, Request
@@ -7,6 +8,11 @@ from fastapi.responses import JSONResponse
 from config import (
     AMOCRM_ACCESS_TOKEN,
     AMOCRM_DOMAIN,
+    AMO_ASSIGNED_STATUS_NAME,
+    AMO_FIELD_NAME_ADDRESS,
+    AMO_FIELD_NAME_GEODESIST,
+    AMO_FIELD_NAME_TIME,
+    AMO_FIELD_NAME_WORK_TYPE,
     DEBUG,
     WAPPI_API_TOKEN,
     WAPPI_MAX_PROFILE_ID,
@@ -26,6 +32,9 @@ app = FastAPI(title="Geodesist Max", version="1.0.0")
 # in-memory dedup
 _DEDUP: set[str] = set()
 
+# cache: pipeline_id -> { status_name_lower: status_id }
+_PIPELINES_CACHE: dict[int, dict[str, int]] = {}
+
 
 def _dedup(key: str) -> bool:
     if key in _DEDUP:
@@ -34,6 +43,112 @@ def _dedup(key: str) -> bool:
         _DEDUP.clear()
     _DEDUP.add(key)
     return False
+
+
+def _extract_first_lead_event(form: dict) -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
+    """
+    AmoCRM webhooks (настройки -> Webhooks) присылают form-urlencoded вида:
+      leads[status][0][id]=...
+      leads[status][0][pipeline_id]=...
+      leads[status][0][status_id]=...
+      leads[status][0][updated_at]=...
+
+    Возвращаем: (lead_id, pipeline_id, status_id, updated_at)
+    """
+    lead_id = None
+    pipeline_id = None
+    status_id = None
+    updated_at = None
+
+    for k, v in form.items():
+        if not isinstance(v, str):
+            continue
+        if lead_id is None and re.search(r"leads\[(?:status|update)\]\[\d+\]\[id\]$", k):
+            if v.isdigit():
+                lead_id = int(v)
+        if pipeline_id is None and re.search(r"leads\[(?:status|update)\]\[\d+\]\[pipeline_id\]$", k):
+            if v.isdigit():
+                pipeline_id = int(v)
+        if status_id is None and re.search(r"leads\[(?:status|update)\]\[\d+\]\[status_id\]$", k):
+            if v.isdigit():
+                status_id = int(v)
+        if updated_at is None and re.search(r"leads\[(?:status|update)\]\[\d+\]\[updated_at\]$", k):
+            if v.isdigit():
+                updated_at = int(v)
+
+    # fallback: иногда ключи могут быть другими — берём первое подходящее leads..[id]
+    if lead_id is None:
+        for k, v in form.items():
+            if isinstance(v, str) and v.isdigit() and k.endswith("[id]") and "leads" in k:
+                lead_id = int(v)
+                break
+
+    return lead_id, pipeline_id, status_id, updated_at
+
+
+def _cf_value_by_name(lead: dict, field_name: str) -> str:
+    target = (field_name or "").strip().lower()
+    if not target:
+        return ""
+    for cf in lead.get("custom_fields_values") or []:
+        name = str(cf.get("field_name") or "").strip().lower()
+        if name != target:
+            continue
+        values = cf.get("values") or []
+        if not values:
+            return ""
+        v0 = values[0] or {}
+        if isinstance(v0, dict):
+            if v0.get("value") is not None:
+                return str(v0["value"]).strip()
+            if v0.get("enum") is not None:
+                return str(v0["enum"]).strip()
+            if v0.get("enum_id") is not None:
+                return str(v0["enum_id"]).strip()
+        return ""
+    return ""
+
+
+def _contact_phone(contact: dict) -> str:
+    for cf in contact.get("custom_fields_values") or []:
+        if cf.get("field_code") != "PHONE":
+            continue
+        values = cf.get("values") or []
+        for v in values:
+            if isinstance(v, dict) and v.get("value"):
+                return str(v["value"]).strip()
+    return ""
+
+
+def _primary_contact_id(lead: dict) -> Optional[int]:
+    embedded = lead.get("_embedded") or {}
+    contacts = embedded.get("contacts") or []
+    if not contacts:
+        return None
+    cid = (contacts[0] or {}).get("id")
+    return int(cid) if cid else None
+
+
+async def _get_assigned_status_id(amo: AmoCRMClient, pipeline_id: int) -> Optional[int]:
+    if pipeline_id in _PIPELINES_CACHE:
+        return _PIPELINES_CACHE[pipeline_id].get(AMO_ASSIGNED_STATUS_NAME.strip().lower())
+
+    data = await amo.get_pipelines()
+    pipelines = data.get("_embedded", {}).get("pipelines", [])
+    for p in pipelines:
+        pid = p.get("id")
+        if not pid:
+            continue
+        statuses = p.get("_embedded", {}).get("statuses", []) or []
+        mapping: dict[str, int] = {}
+        for st in statuses:
+            sid = st.get("id")
+            nm = str(st.get("name") or "").strip().lower()
+            if sid and nm:
+                mapping[nm] = int(sid)
+        _PIPELINES_CACHE[int(pid)] = mapping
+
+    return _PIPELINES_CACHE.get(pipeline_id, {}).get(AMO_ASSIGNED_STATUS_NAME.strip().lower())
 
 
 def _format_message(
@@ -55,30 +170,7 @@ def _format_message(
     )
 
 
-async def _process_geodesist_webhook(
-    lead_id: int,
-    geodesist: Optional[str],
-    geodesist_phone: Optional[str],
-    work_type: Optional[str],
-    address: Optional[str],
-    time_slot: Optional[str],
-    client_name: Optional[str],
-    client_phone: Optional[str],
-) -> None:
-    # resolve geodesist phone
-    phone = normalize_phone(geodesist_phone or "") or extract_phone(geodesist or "")
-    if not phone:
-        raise ValueError("Не удалось определить телефон геодезиста")
-
-    # message data
-    cn = (client_name or "").strip() or "Не указано"
-    cp = (client_phone or "").strip() or "Не указано"
-    wt = (work_type or "").strip() or "Не указано"
-    addr = (address or "").strip() or "Не указано"
-    ts = (time_slot or "").strip() or "Не указано"
-
-    text = _format_message(lead_id, cn, cp, wt, addr, ts)
-
+async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], status_id: Optional[int]) -> None:
     # clients
     wappi = WappiMaxClient(
         WappiMaxConfig(
@@ -93,11 +185,51 @@ async def _process_geodesist_webhook(
         )
     )
 
+    # 1) читаем сделку
+    lead = await amo.get_lead(lead_id)
+    lead_status_id = int(lead.get("status_id") or 0)
+    lead_pipeline_id = int(lead.get("pipeline_id") or 0)
+
+    # 2) фильтр: только "Назначен"
+    effective_pipeline_id = pipeline_id or lead_pipeline_id
+    assigned_status_id = await _get_assigned_status_id(amo, effective_pipeline_id) if effective_pipeline_id else None
+    if assigned_status_id is None:
+        await amo.add_note_to_lead(
+            lead_id,
+            f"⚠️ Geodesist Max: не найден статус '{AMO_ASSIGNED_STATUS_NAME}'. Отправка не выполнена.",
+        )
+        return
+    if lead_status_id != assigned_status_id:
+        return
+
+    # 3) данные из полей сделки
+    geodesist_raw = _cf_value_by_name(lead, AMO_FIELD_NAME_GEODESIST)
+    phone = extract_phone(geodesist_raw) or normalize_phone(geodesist_raw)
+    if not phone:
+        raise ValueError("Не удалось определить телефон геодезиста из поля сделки")
+
+    wt = _cf_value_by_name(lead, AMO_FIELD_NAME_WORK_TYPE) or "Не указано"
+    addr = _cf_value_by_name(lead, AMO_FIELD_NAME_ADDRESS) or "Не указано"
+    ts = _cf_value_by_name(lead, AMO_FIELD_NAME_TIME) or "Не указано"
+
+    # 4) клиент из контакта сделки
+    cn = "Не указано"
+    cp = "Не указано"
+    cid = _primary_contact_id(lead)
+    if cid:
+        contact = await amo.get_contact(cid)
+        cn = (contact.get("name") or "").strip() or cn
+        cp = _contact_phone(contact) or cp
+
+    text = _format_message(lead_id, cn, cp, wt, addr, ts)
+
+    # 5) отправляем в MAX
     wappi_result = await wappi.send_text(recipient=phone, body=text)
 
     note = (
         "✅ Геодезисту отправлено в MAX\n\n"
         f"Геодезист: {phone}\n"
+        f"Поле геодезиста: {geodesist_raw or 'Не указано'}\n"
         f"Клиент: {cn}\n"
         f"Телефон: {cp}\n"
         f"Тип работ: {wt}\n"
@@ -121,50 +253,34 @@ async def health():
 @app.post("/webhook/amocrm/geodesist-assigned")
 async def geodesist_assigned(request: Request, background_tasks: BackgroundTasks):
     """
-    Webhook от робота AmoCRM.
-    Поддерживает JSON и form-urlencoded.
+    Webhook от AmoCRM на смену статуса сделки.
+
+    В интерфейсе AmoCRM можно указать только URL — поэтому берём lead_id из стандартного payload
+    и дальше всё делаем сами через API.
     """
     try:
         content_type = (request.headers.get("content-type") or "").lower()
-        body = {}
         if "application/json" in content_type:
             body = await request.json()
+            lead_id_raw = body.get("lead_id") or body.get("leadId") or body.get("id")
+            if lead_id_raw is None:
+                return JSONResponse({"status": "error", "reason": "lead_id_required"}, status_code=200)
+            lead_id = int(str(lead_id_raw).strip())
+            pipeline_id_i = int(body.get("pipeline_id")) if str(body.get("pipeline_id", "")).isdigit() else None
+            status_id_i = int(body.get("status_id")) if str(body.get("status_id", "")).isdigit() else None
+            dedup_key = f"json:{lead_id}:{pipeline_id_i}:{status_id_i}"
         else:
             form = await request.form()
             body = dict(form)
+            lead_id, pipeline_id_i, status_id_i, updated_at = _extract_first_lead_event(body)
+            if not lead_id:
+                return JSONResponse({"status": "ignored", "reason": "no_lead_id"}, status_code=200)
+            dedup_key = f"amo:{lead_id}:{pipeline_id_i}:{status_id_i}:{updated_at or ''}"
 
-        lead_id_raw = body.get("lead_id") or body.get("leadId") or body.get("id")
-        if lead_id_raw is None:
-            return JSONResponse({"status": "error", "reason": "lead_id_required"}, status_code=200)
-        try:
-            lead_id = int(str(lead_id_raw).strip())
-        except Exception:
-            return JSONResponse({"status": "error", "reason": "lead_id_invalid"}, status_code=200)
-
-        geodesist = body.get("geodesist")
-        geodesist_phone = body.get("geodesist_phone") or body.get("geodesistPhone")
-        work_type = body.get("work_type") or body.get("workType")
-        address = body.get("address")
-        time_slot = body.get("time_slot") or body.get("timeSlot")
-        client_name = body.get("client_name") or body.get("clientName")
-        client_phone = body.get("client_phone") or body.get("clientPhone")
-
-        dedup_key = f"{lead_id}:{geodesist_phone or geodesist or ''}:{work_type or ''}:{address or ''}:{time_slot or ''}"
         if _dedup(dedup_key):
             return JSONResponse({"status": "ignored", "reason": "duplicate"}, status_code=200)
 
-        background_tasks.add_task(
-            _process_geodesist_webhook,
-            lead_id,
-            str(geodesist).strip() if geodesist is not None else None,
-            str(geodesist_phone).strip() if geodesist_phone is not None else None,
-            str(work_type).strip() if work_type is not None else None,
-            str(address).strip() if address is not None else None,
-            str(time_slot).strip() if time_slot is not None else None,
-            str(client_name).strip() if client_name is not None else None,
-            str(client_phone).strip() if client_phone is not None else None,
-        )
-
+        background_tasks.add_task(_process_geodesist_webhook, lead_id, pipeline_id_i, status_id_i)
         return JSONResponse({"status": "processing", "lead_id": lead_id}, status_code=200)
     except Exception as e:
         logger.error("Webhook error: %s", e)
