@@ -180,8 +180,10 @@ def _format_time_msk(raw: str) -> str:
             from datetime import datetime
             from zoneinfo import ZoneInfo
 
-            dt = datetime.fromtimestamp(ts, tz=ZoneInfo("Europe/Moscow"))
-            return dt.strftime("%d.%m.%Y %H:%M")
+            # Timestamp в UTC, конвертируем в московское время
+            utc_dt = datetime.fromtimestamp(ts, tz=ZoneInfo("UTC"))
+            msk_dt = utc_dt.astimezone(ZoneInfo("Europe/Moscow"))
+            return msk_dt.strftime("%d.%m.%Y %H:%M")
         except Exception:
             return s
     return s
