@@ -232,7 +232,17 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
     geodesist_raw = _cf_value_by_name(lead, AMO_FIELD_NAME_GEODESIST)
     phone = extract_phone(geodesist_raw) or normalize_phone(geodesist_raw)
     if not phone:
-        raise ValueError("Не удалось определить телефон геодезиста из поля сделки")
+        logger.warning(
+            "Lead %s в статусе '%s', но поле '%s' пустое или без телефона (raw=%r)",
+            lead_id, AMO_ASSIGNED_STATUS_NAME, AMO_FIELD_NAME_GEODESIST, geodesist_raw,
+        )
+        await amo.add_note_to_lead(
+            lead_id,
+            f"⚠️ Geodesist Max: поле «{AMO_FIELD_NAME_GEODESIST}» пустое или без телефона — "
+            "сообщение геодезисту не отправлено. Заполните поле и снова переведите сделку в "
+            f"статус «{AMO_ASSIGNED_STATUS_NAME}».",
+        )
+        return
 
     addr = _cf_value_by_name(lead, AMO_FIELD_NAME_ADDRESS) or "Не указано"
     ts = _format_time_msk(_cf_value_by_name(lead, AMO_FIELD_NAME_TIME))
