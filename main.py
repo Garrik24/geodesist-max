@@ -12,6 +12,7 @@ from config import (
     AMO_FIELD_NAME_ADDRESS,
     AMO_FIELD_NAME_GEODESIST,
     AMO_FIELD_NAME_TIME,
+    AMO_FIELD_NAME_WORK_TYPE,
     AMO_FIELD_NAME_CAD_1,
     AMO_FIELD_NAME_CAD_2,
     DEBUG,
@@ -246,6 +247,7 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
 
     addr = _cf_value_by_name(lead, AMO_FIELD_NAME_ADDRESS) or "Не указано"
     ts = _format_time_msk(_cf_value_by_name(lead, AMO_FIELD_NAME_TIME))
+    work_type = _cf_value_by_name(lead, AMO_FIELD_NAME_WORK_TYPE) or "Не указано"
     cadastral_numbers = _cf_values_by_names(lead, [AMO_FIELD_NAME_CAD_1, AMO_FIELD_NAME_CAD_2])
 
     # 4) клиент из контакта сделки
@@ -265,6 +267,7 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
     text = (
         "Добрый день!\n"
         "Вам назначен выезд на объект.\n\n"
+        f"Тип работ: {work_type}\n"
         f"Геодезист: {geo_name}\n"
         f"Клиент: {cn}\n"
         f"Телефон клиента: {cp}\n"
@@ -279,6 +282,7 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
     # Примечание в AmoCRM — без служебной информации Wappi
     note = (
         "✅ Геодезисту отправлено в MAX\n\n"
+        f"Тип работ: {work_type}\n"
         f"Геодезист: {geo_name} ({phone})\n"
         f"Клиент: {cn}\n"
         f"Телефон клиента: {cp}\n"

@@ -26,6 +26,11 @@ AMO_FIELD_NAME_GEODESIST = os.getenv("AMO_FIELD_NAME_GEODESIST", "Геодези
 AMO_FIELD_NAME_ADDRESS = os.getenv("AMO_FIELD_NAME_ADDRESS", "Адрес выезда")
 AMO_FIELD_NAME_TIME = os.getenv("AMO_FIELD_NAME_TIME", "Время выезда")
 
+# AmoCRM: поле с типом работ (Межевание / Техплан / Акт обследования …).
+# В stavgeo26 это select-поле «Интерес» (id 212083); оно же обязательно
+# при переводе в статус «выезд геодезиста».
+AMO_FIELD_NAME_WORK_TYPE = os.getenv("AMO_FIELD_NAME_WORK_TYPE", "Интерес")
+
 # Имена полей с кадастровыми номерами.
 # Если у вас поля названы иначе — переопределите через Railway Variables.
 AMO_FIELD_NAME_CAD_1 = os.getenv("AMO_FIELD_NAME_CAD_1", "Кадастровый номер 1")
