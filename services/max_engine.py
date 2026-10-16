@@ -29,14 +29,19 @@ def extract_phone(text: str) -> str:
 
 
 @dataclass(frozen=True)
-class WappiMaxConfig:
-    api_token: str
-    profile_id: str
-    base_url: str = "https://wappi.pro"
+class MaxEngineConfig:
+    base_url: str
+    api_key: str
+    instance: str = "stavgeo-max"
 
 
-class WappiMaxClient:
-    def __init__(self, cfg: WappiMaxConfig):
+class MaxEngineClient:
+    """
+    Отправка в MAX через собственный шлюз max-engine (Evolution-совместимый API).
+    Сообщение уходит с рабочего аккаунта MAX.
+    """
+
+    def __init__(self, cfg: MaxEngineConfig):
         self._cfg = cfg
 
     async def send_text(self, recipient: str, body: str) -> Dict[str, Any]:
@@ -46,16 +51,15 @@ class WappiMaxClient:
         if not body or not body.strip():
             raise ValueError("message body is empty")
 
-        url = f"{self._cfg.base_url}/maxapi/async/message/send"
-        headers = {"Authorization": self._cfg.api_token}
-        params = {"profile_id": self._cfg.profile_id}
-        payload = {"recipient": phone, "body": body}
+        url = f"{self._cfg.base_url.rstrip('/')}/message/sendText/{self._cfg.instance}"
+        headers = {"apikey": self._cfg.api_key}
+        payload = {"number": phone, "text": body}
 
-        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
-            resp = await client.post(url, headers=headers, params=params, json=payload)
-            resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 400:
+                raise RuntimeError(f"max-engine HTTP {resp.status_code}: {resp.text[:300]}")
             try:
                 return resp.json()
             except Exception:
                 return {"status_code": resp.status_code, "text": resp.text}
-

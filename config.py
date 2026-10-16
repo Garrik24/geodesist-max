@@ -14,9 +14,10 @@ PORT = int(os.getenv("PORT", "8000"))
 AMOCRM_DOMAIN = os.getenv("AMOCRM_DOMAIN")
 AMOCRM_ACCESS_TOKEN = os.getenv("AMOCRM_ACCESS_TOKEN")
 
-# Wappi MAX
-WAPPI_API_TOKEN = os.getenv("WAPPI_API_TOKEN")
-WAPPI_MAX_PROFILE_ID = os.getenv("WAPPI_MAX_PROFILE_ID")
+# MAX: собственный шлюз max-engine (VPS, маршрут /evo в Caddy)
+MAX_ENGINE_URL = os.getenv("MAX_ENGINE_URL")
+MAX_ENGINE_API_KEY = os.getenv("MAX_ENGINE_API_KEY")
+MAX_ENGINE_INSTANCE = os.getenv("MAX_ENGINE_INSTANCE", "stavgeo-max")
 
 # AmoCRM: имя статуса, на котором шлём геодезисту
 AMO_ASSIGNED_STATUS_NAME = os.getenv("AMO_ASSIGNED_STATUS_NAME", "Назначен")

@@ -16,12 +16,13 @@ from config import (
     AMO_FIELD_NAME_CAD_1,
     AMO_FIELD_NAME_CAD_2,
     DEBUG,
-    WAPPI_API_TOKEN,
-    WAPPI_MAX_PROFILE_ID,
+    MAX_ENGINE_API_KEY,
+    MAX_ENGINE_INSTANCE,
+    MAX_ENGINE_URL,
     require_env,
 )
 from services.amocrm import AmoCRMClient, AmoConfig
-from services.wappi_max import WappiMaxClient, WappiMaxConfig, extract_phone, normalize_phone
+from services.max_engine import MaxEngineClient, MaxEngineConfig, extract_phone, normalize_phone
 
 logging.basicConfig(
     level=logging.DEBUG if DEBUG else logging.INFO,
@@ -199,10 +200,11 @@ def _geodesist_name(geodesist_raw: str) -> str:
 
 async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], status_id: Optional[int]) -> None:
     # clients
-    wappi = WappiMaxClient(
-        WappiMaxConfig(
-            api_token=require_env("WAPPI_API_TOKEN", WAPPI_API_TOKEN),
-            profile_id=require_env("WAPPI_MAX_PROFILE_ID", WAPPI_MAX_PROFILE_ID),
+    max_engine = MaxEngineClient(
+        MaxEngineConfig(
+            base_url=require_env("MAX_ENGINE_URL", MAX_ENGINE_URL),
+            api_key=require_env("MAX_ENGINE_API_KEY", MAX_ENGINE_API_KEY),
+            instance=MAX_ENGINE_INSTANCE,
         )
     )
     amo = AmoCRMClient(
@@ -277,9 +279,20 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
     )
 
     # 5) отправляем в MAX
-    await wappi.send_text(recipient=phone, body=text)
+    try:
+        await max_engine.send_text(recipient=phone, body=text)
+    except Exception as e:
+        logger.error("Lead %s: не удалось отправить геодезисту %s в MAX: %s", lead_id, phone, e)
+        await amo.add_note_to_lead(
+            lead_id,
+            f"⚠️ Geodesist Max: сообщение геодезисту ({phone}) в MAX НЕ отправлено.\n"
+            f"Причина: {e}\n"
+            "Сообщите геодезисту вручную или снова переведите сделку в статус "
+            f"«{AMO_ASSIGNED_STATUS_NAME}».",
+        )
+        return
 
-    # Примечание в AmoCRM — без служебной информации Wappi
+    # Примечание в AmoCRM — без служебной информации
     note = (
         "✅ Геодезисту отправлено в MAX\n\n"
         f"Тип работ: {work_type}\n"

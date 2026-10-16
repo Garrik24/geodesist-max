@@ -1,6 +1,6 @@
 ## Geodesist Max
 
-Отдельный сервис для AmoCRM: отправка геодезисту сообщения в MAX через Wappi при переводе сделки на этап «Назначен».
+Отдельный сервис для AmoCRM: отправка геодезисту сообщения в MAX через собственный шлюз max-engine при переводе сделки на этап «Назначен».
 
 ### Endpoint для AmoCRM Webhooks (смена статуса сделки)
 В AmoCRM можно указать только URL — поэтому сервис принимает стандартный form-urlencoded payload и сам вытягивает сделку/контакт по API.
@@ -10,8 +10,9 @@
 ### Railway Variables (обязательно)
 - `AMOCRM_DOMAIN`
 - `AMOCRM_ACCESS_TOKEN`
-- `WAPPI_API_TOKEN`
-- `WAPPI_MAX_PROFILE_ID`
+- `MAX_ENGINE_URL` — адрес шлюза, напр. `https://<домен MAX-стека>/evo`
+- `MAX_ENGINE_API_KEY` — ключ `apikey` для маршрута `/evo` (в Caddy на VPS)
+- `MAX_ENGINE_INSTANCE` (по умолчанию `stavgeo-max`)
 
 ### Настройки (опционально)
 - `AMO_ASSIGNED_STATUS_NAME` (по умолчанию `Назначен`)
