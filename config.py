@@ -38,6 +38,11 @@ AMO_FIELD_NAME_CAD_1 = os.getenv("AMO_FIELD_NAME_CAD_1", "Кадастровый
 AMO_FIELD_NAME_CAD_2 = os.getenv("AMO_FIELD_NAME_CAD_2", "Кадастровый номер 2")
 
 
+# Уведомление клиента в MAX после отправки геодезисту (по умолчанию включено).
+CLIENT_NOTIFY_ENABLED = os.getenv("CLIENT_NOTIFY_ENABLED", "true").lower() not in ("0", "false", "no", "off")
+COMPANY_NAME = os.getenv("COMPANY_NAME", "Ставропольгеодезия")
+
+
 def require_env(name: str, value: str | None) -> str:
     if value:
         return value

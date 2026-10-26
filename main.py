@@ -15,6 +15,8 @@ from config import (
     AMO_FIELD_NAME_WORK_TYPE,
     AMO_FIELD_NAME_CAD_1,
     AMO_FIELD_NAME_CAD_2,
+    CLIENT_NOTIFY_ENABLED,
+    COMPANY_NAME,
     DEBUG,
     MAX_ENGINE_API_KEY,
     MAX_ENGINE_INSTANCE,
@@ -191,6 +193,103 @@ def _format_time_msk(raw: str) -> str:
     return s
 
 
+CLIENT_NOTE_OK = "✅ Клиенту отправлено в MAX"
+CLIENT_NOTE_FAIL = "⚠️ Клиенту не отправлено"
+
+
+def _client_first_name(contact_name: str) -> str:
+    """Для обращения: «Николай Валентинович» оставляем как есть, служебные имена отбрасываем."""
+    s = (contact_name or "").strip()
+    if not s or s == "Не указано":
+        return ""
+    low = s.lower()
+    if low.startswith(("входящий", "исходящий", "спам", "+7", "8 9", "79")) or re.search(r"\d{6,}", s):
+        return ""
+    return s
+
+
+def _format_phone_pretty(digits: str) -> str:
+    d = normalize_phone(digits)
+    if len(d) == 11 and d.startswith("7"):
+        return f"+7 {d[1:4]} {d[4:7]}-{d[7:9]}-{d[9:11]}"
+    return f"+{d}" if d else ""
+
+
+def build_client_text(
+    client_name: str,
+    address: str,
+    work_type: str,
+    geo_name: str,
+    geo_phone: str,
+    when_msk: str,
+) -> str:
+    name = _client_first_name(client_name)
+    greet = f"Здравствуйте, {name}!" if name else "Здравствуйте!"
+    obj = f"По вашему объекту {address}" if address and address != "Не указано" else "По вашему объекту"
+    wt = f" ({work_type})" if work_type and work_type != "Не указано" else ""
+    geo = geo_name if geo_name and geo_name != "Не указано" else "специалист"
+    when = (
+        f"Выезд запланирован на {when_msk} (МСК)."
+        if when_msk and when_msk != "Не указано"
+        else "Дату и время выезда геодезист согласует с вами."
+    )
+    return (
+        f"{greet} Это «{COMPANY_NAME}». {obj} назначен выезд геодезиста{wt}. "
+        f"Геодезист: {geo}, контактный номер {_format_phone_pretty(geo_phone)}. {when}"
+    )
+
+
+async def _client_already_notified(amo: AmoCRMClient, lead_id: int) -> bool:
+    notes = await amo.get_lead_notes(lead_id)
+    for n in notes:
+        text = str(((n or {}).get("params") or {}).get("text") or "")
+        if text.startswith(CLIENT_NOTE_OK):
+            return True
+    return False
+
+
+async def _notify_client(
+    amo: AmoCRMClient,
+    max_engine: "MaxEngineClient",
+    lead_id: int,
+    client_name: str,
+    client_phone_raw: str,
+    address: str,
+    work_type: str,
+    geo_name: str,
+    geo_phone: str,
+    when_msk: str,
+) -> None:
+    """Второе сообщение — клиенту. Не падает: любой исход пишем примечанием в сделку."""
+    try:
+        if await _client_already_notified(amo, lead_id):
+            logger.info("Lead %s: клиенту уже отправлялось — пропускаю", lead_id)
+            return
+    except Exception as e:
+        # Не смогли проверить дубль — не рискуем повторной отправкой.
+        logger.error("Lead %s: не удалось проверить примечания: %s", lead_id, e)
+        await amo.add_note_to_lead(lead_id, f"{CLIENT_NOTE_FAIL}: не удалось проверить, отправлялось ли раньше ({e})")
+        return
+
+    phone = normalize_phone(client_phone_raw) if client_phone_raw and client_phone_raw != "Не указано" else ""
+    if not phone or len(phone) < 10:
+        await amo.add_note_to_lead(lead_id, f"{CLIENT_NOTE_FAIL}: у основного контакта сделки нет телефона")
+        return
+    if phone == normalize_phone(geo_phone):
+        await amo.add_note_to_lead(lead_id, f"{CLIENT_NOTE_FAIL}: телефон клиента совпадает с телефоном геодезиста")
+        return
+
+    text = build_client_text(client_name, address, work_type, geo_name, geo_phone, when_msk)
+    try:
+        await max_engine.send_text(recipient=phone, body=text)
+    except Exception as e:
+        logger.error("Lead %s: не удалось отправить клиенту %s в MAX: %s", lead_id, phone, e)
+        await amo.add_note_to_lead(lead_id, f"{CLIENT_NOTE_FAIL}: {str(e)[:300]}\nТелефон: +{phone}")
+        return
+
+    await amo.add_note_to_lead(lead_id, f"{CLIENT_NOTE_OK}\n\nТелефон: +{phone}\n\n{text}")
+
+
 def _geodesist_name(geodesist_raw: str) -> str:
     s = (geodesist_raw or "").strip()
     if not s:
@@ -304,6 +403,14 @@ async def _process_geodesist_webhook(lead_id: int, pipeline_id: Optional[int], s
         + (f"\nКадастровые номера: {cad_line}" if cad_line else "")
     )
     await amo.add_note_to_lead(lead_id, note)
+
+    # 6) сообщение клиенту
+    if CLIENT_NOTIFY_ENABLED:
+        await _notify_client(
+            amo, max_engine, lead_id,
+            client_name=cn, client_phone_raw=cp, address=addr, work_type=work_type,
+            geo_name=geo_name, geo_phone=phone, when_msk=ts,
+        )
 
 
 @app.get("/")
