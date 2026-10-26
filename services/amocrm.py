@@ -42,6 +42,21 @@ class AmoCRMClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def get_lead_notes(self, lead_id: int, limit: int = 250) -> List[Dict[str, Any]]:
+        """Примечания сделки (common), новые первыми. Пусто при 204."""
+        url = f"{self._base_url}/leads/{lead_id}/notes"
+        params = {"limit": limit, "filter[note_type]": "common", "order[id]": "desc"}
+        async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
+            resp = await client.get(url, headers=self._headers, params=params)
+            if resp.status_code == 204:
+                return []
+            resp.raise_for_status()
+            try:
+                data = resp.json()
+            except Exception:
+                return []
+            return (data.get("_embedded") or {}).get("notes") or []
+
     async def get_contact(self, contact_id: int) -> Dict[str, Any]:
         url = f"{self._base_url}/contacts/{contact_id}"
         async with httpx.AsyncClient(timeout=30.0, verify=False) as client:
